@@ -22,11 +22,11 @@
       (:|push| 'c-push)
       (:|pop| 'c-pop)
       (:|label| 'c-label)
-      (:|goto| 'goto)
+      (:|goto| 'c-goto)
       (:|if| 'c-if)
       (:|function| 'c-function)
       (:|return| 'c-return)
-      (:|call| 'call)
+      (:|call| 'c-call)
       (otherwise 'c-arithmetic))))
 
 (defun get-args (command)
@@ -34,7 +34,6 @@
     (if (= 1 (length args))
 	(values (first args) nil)
 	(values (first args) (second args)))))
-
 
 (defun translate (command filename)
   (let ((command-type (command-type command)))
@@ -44,6 +43,10 @@
 	   (pop-command command filename))
 	  ((eql command-type 'c-arithmetic)
 	   (arithmetic-logical-op command))
+	  ((eql command-type 'c-label)
+	   (write-label command))
+	  ((eql command-type 'c-goto)
+	   (write-goto command))
 	  (t (error "Cannot process it for now.")))))
 
 (defun arithmetic-logical-op (command)
@@ -143,6 +146,14 @@
 	    ((string= "static" segment)
 	     (append (list @static) rest))
 	    (t (error "Segment not recognized."))))))
+
+(defun write-label (command)
+  (let ((label-name (second (split-sequence:split-sequence #\space command :test 'string=))))
+    (list (concatenate 'string "(" label-name ")"))))
+
+(defun write-goto (command)
+  (let ((goto-label (second (split-sequence:split-sequence #\space command :test 'string=))))
+    (list (concatenate 'string "@" goto-label) "0;JMP")))
 
 (write-file "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.vm"
 	    "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.asm")
