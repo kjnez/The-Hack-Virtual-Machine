@@ -23,7 +23,7 @@
       (:|pop| 'c-pop)
       (:|label| 'c-label)
       (:|goto| 'c-goto)
-      (:|if| 'c-if)
+      (:|if-goto| 'c-if)
       (:|function| 'c-function)
       (:|return| 'c-return)
       (:|call| 'c-call)
@@ -47,6 +47,8 @@
 	   (write-label command))
 	  ((eql command-type 'c-goto)
 	   (write-goto command))
+	  ((eq command-type 'c-if)
+	   (write-if command))
 	  (t (error "Cannot process it for now.")))))
 
 (defun arithmetic-logical-op (command)
@@ -155,6 +157,10 @@
   (let ((goto-label (second (split-sequence:split-sequence #\space command :test 'string=))))
     (list (concatenate 'string "@" goto-label) "0;JMP")))
 
+(defun write-if (command)
+  (let ((goto-label (second (split-sequence:split-sequence #\space command :test 'string=))))
+    (list "@SP" "AM=M-1" "D=M" (concatenate 'string "@" goto-label) "D;JNE")))
+
 (write-file "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.vm"
 	    "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.asm")
 
@@ -169,3 +175,9 @@
 
 (write-file "~/nand2tetris/projects/07/MemoryAccess/StaticTest/StaticTest.vm"
 	    "~/nand2tetris/projects/07/MemoryAccess/StaticTest/StaticTest.asm")
+
+(write-file "~/nand2tetris/projects/08/ProgramFlow/BasicLoop/BasicLoop.vm"
+	    "~/nand2tetris/projects/08/ProgramFlow/BasicLoop/BasicLoop.asm")
+
+(write-file "~/nand2tetris/projects/08/ProgramFlow/FibonacciSeries/FibonacciSeries.vm"
+	    "~/nand2tetris/projects/08/ProgramFlow/FibonacciSeries/FibonacciSeries.asm")
