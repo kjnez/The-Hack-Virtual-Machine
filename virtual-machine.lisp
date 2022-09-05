@@ -38,9 +38,9 @@
 (defun translate (command filename)
   (let ((command-type (command-type command)))
     (cond ((eql command-type 'c-push)
-	   (push-command command filename))
+	   (write-push command filename))
 	  ((eql command-type 'c-pop)
-	   (pop-command command filename))
+	   (write-pop command filename))
 	  ((eql command-type 'c-arithmetic)
 	   (arithmetic-logical-op command))
 	  ((eql command-type 'c-label)
@@ -49,6 +49,12 @@
 	   (write-goto command))
 	  ((eq command-type 'c-if)
 	   (write-if command))
+	  ((eq command-type 'c-function)
+	   (write-function command))
+	  ((eq command-type 'c-return)
+	   (write-return command))
+	  ((eq command-type 'c-call)
+	   (write-call command))
 	  (t (error "Cannot process it for now.")))))
 
 (defun arithmetic-logical-op (command)
@@ -105,7 +111,7 @@
 	(dolist (str assembly-list)
 	  (format stream (concatenate 'string str "~%")))))))
 
-(defun push-command (command filename)
+(defun write-push (command &optional filename)
   (multiple-value-bind (segment index) (get-args command)
     (let* ((@index (concatenate 'string "@" index))
 	   (rest (list "D=M" @index "A=D+A" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1"))
@@ -128,7 +134,7 @@
 	     (append (list @static) rest))
 	    (t (error "Segment not recognized."))))))
 
-(defun pop-command (command filename)
+(defun write-pop (command &optional filename)
   (multiple-value-bind (segment index) (get-args command)
     (let* ((@index (concatenate 'string "@" index))
 	   (rest (list "D=M" @index "D=D+A" "@R13" "M=D" "@SP" "AM=M-1" "D=M" "@R13" "A=M" "M=D"))
@@ -161,6 +167,24 @@
   (let ((goto-label (second (split-sequence:split-sequence #\space command :test 'string=))))
     (list "@SP" "AM=M-1" "D=M" (concatenate 'string "@" goto-label) "D;JNE")))
 
+(defun write-function (command)
+  (let* ((name-argument (rest (split-sequence:split-sequence #\space command :test 'string=)))
+	 (func-name (first name-argument))
+	 (n-args (concatenate 'string "@" (second name-argument)))
+	 (local-label (concatenate 'string func-name "$" (string (gensym "local")))))
+    `(,(concatenate 'string "(" func-name ")") "@SP" "D=M" "@LCL" "M=D" ,n-args "D=A" "@R13" "M=D"
+      ,(concatenate 'string "(" local-label ")") ,@(write-push "push constant 0") "@R13" "MD=M-1"
+      ,(concatenate 'string "@" local-label) "D;JGT")))
+
+(defun write-return (command)
+  (assert (string= command "return"))
+  (list "@LCL" "D=M" "@R13" "M=D" "@5" "A=D-A" "D=M" "@R14" "M=D" "@SP" "AM=M-1" "D=M" "@ARG" "A=M" "M=D" "@ARG" "D=M" "@SP" "M=D+1" "@R13" "A=M-1" "D=M" "@THAT" "M=D" "@2" "D=A" "@R13" "A=M-D" "D=M" "@THIS" "M=D" "@3" "D=A" "@R13" "A=M-D" "D=M" "@ARG" "M=D" "@4" "D=A" "@R13" "A=M-D" "D=M" "@LCL" "M=D" "@R14" "A=M" "0;JMP"))
+
+(defun write-call (command)
+  (multiple-value-bind (f n) (get-args command)
+   (let ((return-address (string (gensym "return-address"))))
+     (list (concatenate 'string "@" return-address) "D=A" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@LCL" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@ARG" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THIS" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THAT" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" (concatenate 'string "@" n) "D=A" "@5" "D=D+A" "@SP" "D=M-D" "@ARG" "M=D" "@SP" "D=M" "@LCL" "M=D" (concatenate 'string "@" f) "0;JMP" (concatenate 'string "(" return-address ")")))))
+
 (write-file "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.vm"
 	    "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.asm")
 
@@ -181,3 +205,6 @@
 
 (write-file "~/nand2tetris/projects/08/ProgramFlow/FibonacciSeries/FibonacciSeries.vm"
 	    "~/nand2tetris/projects/08/ProgramFlow/FibonacciSeries/FibonacciSeries.asm")
+
+(write-file "~/nand2tetris/projects/08/FunctionCalls/SimpleFunction/SimpleFunction.vm"
+	    "~/nand2tetris/projects/08/FunctionCalls/SimpleFunction/SimpleFunction.asm")
