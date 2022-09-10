@@ -10,11 +10,22 @@
 	(string-trim " " str))))
 
 (defun get-instructions (file)
-  (let ((lines (uiop:read-file-lines file)))
-    (mapcar #'remove-comment
-	    (remove-if
-	     #'(lambda (str) (or (string= "" str) (string= (elt str 0) "/")))
-	     lines))))
+  (cond ((string= "vm" (pathname-type file))
+	 (let ((lines (uiop:read-file-lines file)))
+	   (mapcar #'remove-comment
+		   (remove-if
+		    #'(lambda (str) (or (string= "" str) (string= (elt str 0) "/")))
+		    lines))))
+	(t (let ((output '())
+		 (vm-files (directory (concatenate 'string file "/*.vm"))))
+	     (dolist (vm-file vm-files)
+	       (setf output
+		     (append output
+			     (mapcar #'remove-comment
+				     (remove-if
+				      #'(lambda (str) (or (string= "" str) (string= (elt str 0) "/")))
+				      (uiop:read-file-lines vm-file))))))
+	     output))))
 
 (defun command-type (command)
   (let ((first-word (first (split-sequence:split-sequence #\space command :test 'string=))))
@@ -106,6 +117,11 @@
 	 (filename (pathname-name input-file))
 	 (assembly-lists (mapcar #'(lambda (c) (translate c filename)) commands)))
     (with-open-file (stream output-file :direction :output :if-exists :supersede)
+      ;; Bootstrapping
+      (when (not (pathname-name (probe-file input-file)))
+	(let ((bootstrap-code `("@256" "D=A" "@SP" "M=D" ,@(write-call "call Sys.init 0"))))
+	  (dolist (line bootstrap-code)
+	    (format stream (concatenate 'string line "~%")))))
       (dolist (assembly-list assembly-lists)
 	(dolist (str assembly-list)
 	  (format stream (concatenate 'string str "~%")))))))
@@ -171,18 +187,20 @@
 	 (func-name (first name-argument))
 	 (n-args (concatenate 'string "@" (second name-argument)))
 	 (local-label (concatenate 'string func-name "$" (string (gensym "local")))))
-    `(,(concatenate 'string "(" func-name ")") "@SP" "D=M" "@LCL" "M=D" ,n-args "D=A" "@R13" "M=D"
-      ,(concatenate 'string "(" local-label ")") ,@(write-push "push constant 0") "@R13" "MD=M-1"
-      ,(concatenate 'string "@" local-label) "D;JGT")))
+    (if (> (parse-integer (second name-argument)) 0)
+	`(,(concatenate 'string "(" func-name ")") "@SP" "D=M" "@LCL" "M=D" ,n-args "D=A" "@R13" "M=D"
+	  ,(concatenate 'string "(" local-label ")") ,@(write-push "push constant 0") "@R13" "MD=M-1"
+	  ,(concatenate 'string "@" local-label) "D;JGT")
+	(list (concatenate 'string "(" func-name ")")))))
 
 (defun write-return (command)
   (assert (string= command "return"))
-  (list "@LCL" "D=M" "@R13" "M=D" "@5" "A=D-A" "D=M" "@R14" "M=D" "@SP" "AM=M-1" "D=M" "@ARG" "A=M" "M=D" "@ARG" "D=M" "@SP" "M=D+1" "@R13" "A=M-1" "D=M" "@THAT" "M=D" "@2" "D=A" "@R13" "A=M-D" "D=M" "@THIS" "M=D" "@3" "D=A" "@R13" "A=M-D" "D=M" "@ARG" "M=D" "@4" "D=A" "@R13" "A=M-D" "D=M" "@LCL" "M=D" "@R14" "A=M" "0;JMP"))
+  (list "@LCL // (return starts here)" "D=M" "@R13" "M=D" "@5" "A=D-A" "D=M" "@R14" "M=D" "@SP" "AM=M-1" "D=M" "@ARG" "A=M" "M=D" "@ARG" "D=M" "@SP" "M=D+1" "@R13" "A=M-1" "D=M" "@THAT" "M=D" "@2" "D=A" "@R13" "A=M-D" "D=M" "@THIS" "M=D" "@3" "D=A" "@R13" "A=M-D" "D=M" "@ARG" "M=D" "@4" "D=A" "@R13" "A=M-D" "D=M" "@LCL" "M=D" "@R14" "A=M" "0;JMP // (return ends here)"))
 
 (defun write-call (command)
   (multiple-value-bind (f n) (get-args command)
    (let ((return-address (string (gensym "return-address"))))
-     (list (concatenate 'string "@" return-address) "D=A" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@LCL" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@ARG" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THIS" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THAT" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" (concatenate 'string "@" n) "D=A" "@5" "D=D+A" "@SP" "D=M-D" "@ARG" "M=D" "@SP" "D=M" "@LCL" "M=D" (concatenate 'string "@" f) "0;JMP" (concatenate 'string "(" return-address ")")))))
+     (list (concatenate 'string "@" return-address "// (call starts here)") "D=A" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@LCL" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@ARG" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THIS" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THAT" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" (concatenate 'string "@" n) "D=A" "@5" "D=D+A" "@SP" "D=M-D" "@ARG" "M=D" "@SP" "D=M" "@LCL" "M=D" (concatenate 'string "@" f) "0;JMP" (concatenate 'string "(" return-address ")" "// (call ends here)")))))
 
 (write-file "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.vm"
 	    "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.asm")
@@ -207,3 +225,9 @@
 
 (write-file "~/nand2tetris/projects/08/FunctionCalls/SimpleFunction/SimpleFunction.vm"
 	    "~/nand2tetris/projects/08/FunctionCalls/SimpleFunction/SimpleFunction.asm")
+
+(write-file "~/nand2tetris/projects/08/FunctionCalls/FibonacciElement"
+	    "~/nand2tetris/projects/08/FunctionCalls/FibonacciElement/FibonacciElement.asm")
+
+(write-file "~/nand2tetris/projects/08/FunctionCalls/StaticsTest"
+	    "~/nand2tetris/projects/08/FunctionCalls/StaticsTest/StaticsTest.asm")
