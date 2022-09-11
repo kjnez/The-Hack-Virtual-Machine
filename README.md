@@ -6,7 +6,7 @@ This project is an implementation of a virtual machine to translate VM source co
 You can use it by providing VM source file and the output file as follows:
 
 ```lisp
-(virtual-machine:write-file "test/StaticTest.vm" "StaticTest.asm")
+(virtual-machine:compile-dir "StaticsTest")
 ```
 
 ## License
