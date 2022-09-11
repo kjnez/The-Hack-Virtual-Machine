@@ -10,22 +10,11 @@
 	(string-trim " " str))))
 
 (defun get-instructions (file)
-  (cond ((string= "vm" (pathname-type file))
-	 (let ((lines (uiop:read-file-lines file)))
-	   (mapcar #'remove-comment
-		   (remove-if
-		    #'(lambda (str) (or (string= "" str) (string= (elt str 0) "/")))
-		    lines))))
-	(t (let ((output '())
-		 (vm-files (directory (concatenate 'string file "/*.vm"))))
-	     (dolist (vm-file vm-files)
-	       (setf output
-		     (append output
-			     (mapcar #'remove-comment
-				     (remove-if
-				      #'(lambda (str) (or (string= "" str) (string= (elt str 0) "/")))
-				      (uiop:read-file-lines vm-file))))))
-	     output))))
+  (let ((lines (uiop:read-file-lines file)))
+    (mapcar #'remove-comment
+	    (remove-if
+	     #'(lambda (str) (or (string= "" str) (string= (elt str 0) "/")))
+	     lines))))
 
 (defun command-type (command)
   (let ((first-word (first (split-sequence:split-sequence #\space command :test 'string=))))
@@ -48,24 +37,28 @@
 (defun translate (command filename)
   (let ((command-type (command-type command)))
     (cond ((eql command-type 'c-push)
-	   (write-push command filename))
+	   (prepend-comment command (write-push command filename)))
 	  ((eql command-type 'c-pop)
-	   (write-pop command filename))
+	   (prepend-comment command (write-pop command filename)))
 	  ((eql command-type 'c-arithmetic)
-	   (arithmetic-logical-op command))
+	   (prepend-comment command (arithmetic-logical-op command)))
 	  ((eql command-type 'c-label)
-	   (write-label command))
+	   (prepend-comment command (write-label command)))
 	  ((eql command-type 'c-goto)
-	   (write-goto command))
+	   (prepend-comment command (write-goto command)))
 	  ((eql command-type 'c-if)
-	   (write-if command))
+	   (prepend-comment command (write-if command)))
 	  ((eql command-type 'c-function)
-	   (write-function command))
+	   (prepend-comment command (write-function command)))
 	  ((eql command-type 'c-return)
-	   (write-return command))
+	   (prepend-comment command (write-return command)))
 	  ((eql command-type 'c-call)
-	   (write-call command))
+	   (prepend-comment command (write-call command)))
 	  (t (error "Cannot process it for now.")))))
+
+(defmacro prepend-comment (command &body body)
+  `(append (list (concatenate 'string "//--: " ,command))
+	   . ,body))
 
 (defun arithmetic-logical-op (command)
   (cond ((string= "add" command)
@@ -112,19 +105,29 @@
 	 (list "@SP" "M=M-1" "@SP" "A=M" "M=!M" "@SP" "M=M+1"))
 	(t (error "Invalid arithmetic or logical operation."))))
 
-(defun write-file (input-file output-file)
-  (let* ((commands (get-instructions input-file))
-	 (filename (pathname-name input-file))
+(defun write-stream (input-file stream)
+  "Read one VM source file and write to output-file."
+  (let* ((filename (pathname-name input-file))
+	 (commands (get-instructions input-file))
 	 (assembly-lists (mapcar #'(lambda (c) (translate c filename)) commands)))
+    (dolist (assembly-list assembly-lists)
+      (dolist (str assembly-list)
+	(format stream (concatenate 'string str "~%"))))))
+
+(defun compile-dir (dir)
+  (let* ((vm-files (directory (concatenate 'string dir "/*.vm")))
+	 (output-file-name (pathname-name dir))
+	 (output-file (concatenate 'string dir "/" output-file-name ".asm")))
     (with-open-file (stream output-file :direction :output :if-exists :supersede)
       ;; Bootstrapping
-      (when (not (pathname-name (probe-file input-file)))
-	(let ((bootstrap-code `("@256" "D=A" "@SP" "M=D" ,@(write-call "call Sys.init 0"))))
-	  (dolist (line bootstrap-code)
-	    (format stream (concatenate 'string line "~%")))))
-      (dolist (assembly-list assembly-lists)
-	(dolist (str assembly-list)
-	  (format stream (concatenate 'string str "~%")))))))
+      (when (> (length vm-files) 1)
+	(let ((bootstrap-code
+		`("//--: SP=256" "@256" "D=A" "@SP" "M=D"
+				 "//--: call Sys.init 0",@(write-call "call Sys.init 0"))))
+	    (dolist (line bootstrap-code)
+	      (format stream (concatenate 'string line "~%")))))
+      (dolist (vm-file vm-files)
+	(write-stream vm-file stream)))))
 
 (defun write-push (command &optional filename)
   (multiple-value-bind (segment index) (get-args command)
@@ -146,7 +149,7 @@
 	    ((string= "pointer" segment)
 	     (list "@R3" "D=A" @index "A=D+A" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1"))
 	    ((string= "static" segment)
-	     (append (list @static) rest))
+	     (append (list @static) (list "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1")))
 	    (t (error "Segment not recognized."))))))
 
 (defun write-pop (command &optional filename)
@@ -167,7 +170,8 @@
 	    ((string= "pointer" segment)
 	     (list "@R3" "D=A" @index "D=D+A" "@R13" "M=D" "@SP" "AM=M-1" "D=M" "@R13" "A=M" "M=D"))
 	    ((string= "static" segment)
-	     (append (list @static) rest))
+	     (append (list @static)
+		     (list "D=A" "@R13" "M=D" "@SP" "AM=M-1" "D=M" "@R13" "A=M" "M=D")))
 	    (t (error "Segment not recognized."))))))
 
 (defun write-label (command)
@@ -195,39 +199,16 @@
 
 (defun write-return (command)
   (assert (string= command "return"))
-  (list "@LCL // (return starts here)" "D=M" "@R13" "M=D" "@5" "A=D-A" "D=M" "@R14" "M=D" "@SP" "AM=M-1" "D=M" "@ARG" "A=M" "M=D" "@ARG" "D=M" "@SP" "M=D+1" "@R13" "A=M-1" "D=M" "@THAT" "M=D" "@2" "D=A" "@R13" "A=M-D" "D=M" "@THIS" "M=D" "@3" "D=A" "@R13" "A=M-D" "D=M" "@ARG" "M=D" "@4" "D=A" "@R13" "A=M-D" "D=M" "@LCL" "M=D" "@R14" "A=M" "0;JMP // (return ends here)"))
+  (list "@LCL" "D=M" "@R13" "M=D" "@5" "A=D-A" "D=M" "@R14" "M=D" "@SP" "AM=M-1" "D=M" "@ARG" "A=M"
+	"M=D" "@ARG" "D=M" "@SP" "M=D+1" "@R13" "A=M-1" "D=M" "@THAT" "M=D" "@2" "D=A" "@R13" "A=M-D"
+	"D=M" "@THIS" "M=D" "@3" "D=A" "@R13" "A=M-D" "D=M" "@ARG" "M=D" "@4" "D=A" "@R13" "A=M-D"
+	"D=M" "@LCL" "M=D" "@R14" "A=M" "0;JMP"))
 
 (defun write-call (command)
   (multiple-value-bind (f n) (get-args command)
    (let ((return-address (string (gensym "return-address"))))
-     (list (concatenate 'string "@" return-address "// (call starts here)") "D=A" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@LCL" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@ARG" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THIS" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THAT" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" (concatenate 'string "@" n) "D=A" "@5" "D=D+A" "@SP" "D=M-D" "@ARG" "M=D" "@SP" "D=M" "@LCL" "M=D" (concatenate 'string "@" f) "0;JMP" (concatenate 'string "(" return-address ")" "// (call ends here)")))))
-
-(write-file "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.vm"
-	    "~/nand2tetris/projects/07/StackArithmetic/SimpleAdd/SimpleAdd.asm")
-
-(write-file "~/nand2tetris/projects/07/StackArithmetic/StackTest/StackTest.vm"
-	    "~/nand2tetris/projects/07/StackArithmetic/StackTest/StackTest.asm")
-
-(write-file "~/nand2tetris/projects/07/MemoryAccess/BasicTest/BasicTest.vm"
-	    "~/nand2tetris/projects/07/MemoryAccess/BasicTest/BasicTest.asm")
-
-(write-file "~/nand2tetris/projects/07/MemoryAccess/PointerTest/PointerTest.vm"
-	    "~/nand2tetris/projects/07/MemoryAccess/PointerTest/PointerTest.asm")
-
-(write-file "~/nand2tetris/projects/07/MemoryAccess/StaticTest/StaticTest.vm"
-	    "~/nand2tetris/projects/07/MemoryAccess/StaticTest/StaticTest.asm")
-
-(write-file "~/nand2tetris/projects/08/ProgramFlow/BasicLoop/BasicLoop.vm"
-	    "~/nand2tetris/projects/08/ProgramFlow/BasicLoop/BasicLoop.asm")
-
-(write-file "~/nand2tetris/projects/08/ProgramFlow/FibonacciSeries/FibonacciSeries.vm"
-	    "~/nand2tetris/projects/08/ProgramFlow/FibonacciSeries/FibonacciSeries.asm")
-
-(write-file "~/nand2tetris/projects/08/FunctionCalls/SimpleFunction/SimpleFunction.vm"
-	    "~/nand2tetris/projects/08/FunctionCalls/SimpleFunction/SimpleFunction.asm")
-
-(write-file "~/nand2tetris/projects/08/FunctionCalls/FibonacciElement"
-	    "~/nand2tetris/projects/08/FunctionCalls/FibonacciElement/FibonacciElement.asm")
-
-(write-file "~/nand2tetris/projects/08/FunctionCalls/StaticsTest"
-	    "~/nand2tetris/projects/08/FunctionCalls/StaticsTest/StaticsTest.asm")
+     (list (concatenate 'string "@" return-address) "D=A" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@LCL" "D=M"
+	   "@SP" "A=M" "M=D" "@SP" "M=M+1" "@ARG" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THIS" "D=M"
+	   "@SP" "A=M" "M=D" "@SP" "M=M+1" "@THAT" "D=M" "@SP" "A=M" "M=D" "@SP" "M=M+1"
+	   (concatenate 'string "@" n) "D=A" "@5" "D=D+A" "@SP" "D=M-D" "@ARG" "M=D" "@SP" "D=M" "@LCL"
+	   "M=D" (concatenate 'string "@" f) "0;JMP" (concatenate 'string "(" return-address ")")))))
